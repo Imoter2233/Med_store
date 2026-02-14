@@ -1,199 +1,120 @@
 import streamlit as st
-import sqlite3
-import os
-from datetime import datetime
+import pandas as pd
+from ui_templates import load_synapse_ui, render_question_card
+from streamlit_gsheetsconnection import GSheetsConnection
 
-# --- SET PAGE CONFIG ---
-st.set_page_config(page_title="MedLib Pro", layout="wide", page_icon="💊")
+# --- 1. INITIAL SETUP ---
+st.set_page_config(page_title="Synapse Ultimate", layout="centered")
+load_synapse_ui()
 
-# Ensure upload directory exists
-if not os.path.exists("uploads"):
-    os.makedirs("uploads")
-
-# --- DATABASE ---
-def get_db():
-    conn = sqlite3.connect("medstore.db", check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-db = get_db()
-db.execute('''CREATE TABLE IF NOT EXISTS medbooks 
-             (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, cat TEXT, img TEXT, pdf TEXT)''')
-db.commit()
-
-# --- PROFESSIONAL CSS (JUMIA / MODERN LOOK) ---
-st.markdown("""
-    <style>
-    /* Import Google Font */
-    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
-
-    html, body, [class*="css"]  {
-        font-family: 'Poppins', sans-serif;
-    }
-
-    /* Main background */
-    .stApp {
-        background-color: #f8f9fa;
-    }
-
-    /* Custom Header */
-    .header-box {
-        background: linear-gradient(90deg, #2c3e50, #4ca1af);
-        padding: 40px;
-        border-radius: 20px;
-        color: white;
-        text-align: center;
-        margin-bottom: 30px;
-        box-shadow: 0 10px 20px rgba(0,0,0,0.1);
-    }
-
-    /* Jumia-Style Card */
-    .book-card {
-        background: white;
-        padding: 20px;
-        border-radius: 15px;
-        box-shadow: 0 5px 15px rgba(0,0,0,0.05);
-        transition: transform 0.3s ease;
-        border: 1px solid #eee;
-        text-align: center;
-        margin-bottom: 25px;
-    }
+# --- 2. SECURITY LAYER (TOKEN BINDING) ---
+def security_check():
+    # Use User-Agent as a device fingerprint
+    device_id = str(hash(st.context.headers.get("User-Agent", "unknown")))
     
-    .book-card:hover {
-        transform: translateY(-10px);
-        box-shadow: 0 12px 30px rgba(0,0,0,0.1);
-        border-color: #4ca1af;
-    }
+    st.sidebar.markdown("## 🔐 Activation")
+    token = st.sidebar.text_input("Enter Access Token", type="password")
+    
+    if not token:
+        st.info("👋 Welcome to Synapse Ultimate. Please enter your token in the sidebar.")
+        st.stop()
 
-    /* Category Badge */
-    .badge {
-        background: #e1f5fe;
-        color: #039be5;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        margin-bottom: 10px;
-        display: inline-block;
-    }
-
-    /* Download Button Styling */
-    .stDownloadButton > button {
-        background: linear-gradient(135deg, #e67e22, #d35400) !important;
-        color: white !important;
-        border: none !important;
-        padding: 10px 20px !important;
-        border-radius: 8px !important;
-        font-weight: 600 !important;
-        width: 100% !important;
-    }
-
-    /* Carousel Image effect */
-    .carousel-img {
-        border-radius: 15px;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-    }
-
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- SIDEBAR ADMIN ---
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/387/387561.png", width=100)
-    st.title("Admin Portal")
-    pw = st.text_input("Enter Secret Code", type="password")
-    is_admin = (pw == "MED777")
-
-    if is_admin:
-        st.success("Authorized")
-        with st.expander("➕ Add New Resource", expanded=True):
-            t = st.text_input("Textbook Name")
-            c = st.selectbox("Category", ["Anatomy", "Physiology", "Surgery", "Pharmacology", "Internal Medicine"])
-            img_f = st.file_uploader("Cover Image", type=['jpg','png','jpeg'])
-            pdf_f = st.file_uploader("PDF File", type=['pdf'])
+    try:
+        # Connect to Google Sheets [Columns: Token, DeviceID]
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        tokens_df = conn.read(worksheet="Tokens", ttl=0) # No cache for security
+        
+        # Check if token exists
+        match = tokens_df[tokens_df['Token'] == token]
+        
+        if match.empty:
+            st.sidebar.error("❌ Token invalid.")
+            st.stop()
             
-            if st.button("🚀 Upload Now"):
-                if t and img_f and pdf_f:
-                    with st.status("Uploading...", expanded=True) as s:
-                        img_path = os.path.join("uploads", img_f.name)
-                        pdf_path = os.path.join("uploads", pdf_f.name)
-                        with open(img_path, "wb") as f: f.write(img_f.getbuffer())
-                        with open(pdf_path, "wb") as f: f.write(pdf_f.getbuffer())
-                        db.execute("INSERT INTO medbooks (title, cat, img, pdf) VALUES (?,?,?,?)", (t, c, img_path, pdf_path))
-                        db.commit()
-                        s.update(label="Published!", state="complete")
-                    st.rerun()
+        registered_device = str(match.iloc[0]['DeviceID']).strip()
+        
+        # Self-Activation Logic
+        if registered_device == "" or registered_device == "nan" or registered_device == "None":
+            # Update local DF
+            tokens_df.loc[tokens_df['Token'] == token, 'DeviceID'] = device_id
+            # Push to Google Sheets
+            conn.update(worksheet="Tokens", data=tokens_df)
+            st.sidebar.success("✨ Device Bound Successfully!")
+            st.balloons()
+        elif registered_device != device_id:
+            st.sidebar.error("🚫 Access Denied: Token used on another device.")
+            st.stop()
+        else:
+            st.sidebar.success("🔓 Access Granted")
 
-# --- MAIN APP INTERFACE ---
-st.markdown("""
-    <div class="header-box">
-        <h1>🏥 Medical Hub</h1>
-        <p>Premium Medical Textbooks for Future Doctors</p>
-    </div>
-    """, unsafe_allow_html=True)
+    except Exception as e:
+        st.sidebar.warning("Security Syncing... Please wait.")
+        # Optional: Hardcode an admin token for testing
+        if token != "ADMIN2024": st.stop()
 
-# Fetch Data
-cursor = db.execute("SELECT * FROM medbooks ORDER BY id DESC")
-books = cursor.fetchall()
+# --- 3. DATA ENGINE (GITHUB CSV) ---
+@st.cache_data(ttl=300) # Auto-update every 5 minutes
+def load_questions():
+    # REPLACE THIS URL WITH YOUR RAW GITHUB CSV LINK
+    CSV_URL = "https://raw.githubusercontent.com/Imoter2233/Med_store/main/questions.csv"
+    try:
+        df = pd.read_csv(CSV_URL)
+        df['year'] = df['year'].astype(str)
+        return df
+    except:
+        return pd.DataFrame()
 
-# 1. TOP CAROUSEL (The Jumia Top Banner)
-if books:
-    st.markdown("### 🔥 Trending This Week")
-    top_items = books[:4]
-    cols = st.columns(len(top_items))
-    for i, book in enumerate(top_items):
-        with cols[i]:
-            st.image(book['img'], use_container_width=True)
-            st.markdown(f"<center><small>{book['title']}</small></center>", unsafe_allow_html=True)
+# --- 4. MAIN APP ---
+security_check()
+df = load_questions()
 
-st.write("---")
+if not df.empty:
+    st.markdown("<h1 style='text-align:center;'>Synapse_ Ultimate</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align:center; opacity:0.6;'>Professional Past Questions Engine</p>", unsafe_allow_html=True)
 
-# 2. SEARCH & FILTER
-c1, c2 = st.columns([3, 1])
-with c1:
-    search = st.text_input("🔍 Find your textbook...", placeholder="Search for 'Gray's' or 'Guyton'...")
-with c2:
-    cat_filter = st.selectbox("Filter", ["All", "Anatomy", "Physiology", "Surgery", "Pharmacology", "Internal Medicine"])
+    # DYNAMIC FILTERS
+    st.sidebar.divider()
+    st.sidebar.subheader("🎯 Refine Search")
+    
+    courses = sorted(df['course_code'].unique())
+    f_course = st.sidebar.multiselect("Select Course", courses)
 
-# 3. THE PROFESSIONAL GRID
-if not books:
-    st.info("The library is being prepared. Check back shortly!")
-else:
-    # Logic for search and category filter
-    display_books = books
+    years = sorted(df['year'].unique(), reverse=True)
+    f_year = st.sidebar.multiselect("Select Year", years)
+
+    topics = sorted(df['topic'].unique())
+    f_topic = st.sidebar.multiselect("Select Topic", topics)
+
+    # Filter Application
+    filtered = df
+    if f_course: filtered = filtered[filtered['course_code'].isin(f_course)]
+    if f_year: filtered = filtered[filtered['year'].isin(f_year)]
+    if f_topic: filtered = filtered[filtered['topic'].isin(f_topic)]
+
+    # SEARCH
+    search = st.text_input("🔍 Search database...", placeholder="Search keywords...")
     if search:
-        display_books = [b for b in display_books if search.lower() in b['title'].lower()]
-    if cat_filter != "All":
-        display_books = [b for b in display_books if b['cat'] == cat_filter]
+        filtered = filtered[filtered['q'].str.contains(search, case=False) | filtered['topic'].str.contains(search, case=False)]
 
-    # Display in Grid
-    for i in range(0, len(display_books), 3):
-        row_cols = st.columns(3)
-        for j, book in enumerate(display_books[i:i+3]):
-            with row_cols[j]:
-                # Card Container
-                st.markdown(f"""
-                    <div class="book-card">
-                        <div class="badge">{book['cat']}</div>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                st.image(book['img'], use_container_width=True)
-                st.markdown(f"**{book['title']}**")
-                
-                # Download Button
-                try:
-                    with open(book['pdf'], "rb") as f:
-                        st.download_button(
-                            label="📥 Download PDF",
-                            data=f,
-                            file_name=f"{book['title']}.pdf",
-                            key=f"btn_{book['id']}"
-                        )
-                except:
-                    st.error("File error")
-                
-                st.markdown('</div>', unsafe_allow_html=True)
+    # PAGINATION
+    limit = 10
+    total = len(filtered)
+    pages = (total // limit) + (1 if total % limit > 0 else 0)
 
-st.markdown("<br><br><center><p style='color: #999;'>© 2024 MedLib Pro • Built for Medical Students</p></center>", unsafe_allow_html=True)
+    if total > 0:
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            curr_page = st.number_input("Page", min_value=1, max_value=max(1, pages), step=1)
+        with c2:
+            st.markdown(f"<br><small>Showing {len(filtered.iloc[(curr_page-1)*limit : curr_page*limit])} of {total} items</small>", unsafe_allow_html=True)
+
+        # RENDER CARDS
+        for _, row in filtered.iloc[(curr_page-1)*limit : curr_page*limit].iterrows():
+            render_question_card(row)
+            with st.expander("📖 View Answer & Explanation"):
+                st.success(f"**Correct Answer: {row['ans']}**")
+                st.write(row['exp'])
+    else:
+        st.warning("No questions match your selection.")
+else:
+    st.error("Wait... The library is empty. Please upload questions.csv to GitHub.")
