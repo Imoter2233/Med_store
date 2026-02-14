@@ -58,7 +58,7 @@ def load_questions():
     # REPLACE THIS URL WITH YOUR RAW GITHUB CSV LINK
     CSV_URL = "https://raw.githubusercontent.com/Imoter2233/Med_store/main/questions.csv"
     try:
-        df = pd.read_csv(CSVhttps://raw.githubusercontent.com/Imoter2233/Med_store/main/questions.csv)
+        df = pd.read_csv("https://raw.githubusercontent.com/Imoter2233/Med_store/main/questions.csv")
         df['year'] = df['year'].astype(str)
         return df
     except:
