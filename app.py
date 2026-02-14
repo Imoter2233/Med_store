@@ -22,7 +22,7 @@ def security_check():
     try:
         # Connect to Google Sheets [Columns: Token, DeviceID]
         conn = st.connection("gsheets", type=GSheetsConnection)
-        tokens_df = conn.read(worksheet="Tokens", ttl=0) # No cache for security
+        tokens_df = conn.read(worksheet="Sheet1", ttl=0) # No cache for security
         
         # Check if token exists
         match = tokens_df[tokens_df['Token'] == token]
