@@ -1,8 +1,11 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-# --- 1. UI TEMPLATES (Exactly as you provided) ---
-def load_synapse_ui():
+# 1. Page Config
+st.set_page_config(page_title="Synapse Ultimate", layout="centered")
+
+# 2. Combined UI Styles (Centered & Colored)
+def load_full_ui():
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap');
@@ -13,116 +16,97 @@ def load_synapse_ui():
       --primary: #4C51BF;
       --shadow-light: #ffffff;
       --shadow-dark: #a3b1c6;
-      --accent: #d97706;
-      --correct: #38A169;
     }
 
-    .stApp { background: var(--bg); color: var(--text); font-family: 'Nunito', sans-serif; }
+    /* Force background color on everything */
+    .stApp { 
+        background-color: var(--bg) !important; 
+        color: var(--text); 
+        font-family: 'Nunito', sans-serif; 
+    }
     
+    /* Centered Login Box */
+    .login-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 40px;
+        background: var(--bg);
+        border-radius: 30px;
+        box-shadow: 10px 10px 20px var(--shadow-dark), -10px -10px 20px var(--shadow-light);
+        margin-top: 20%;
+        border: 2px solid var(--primary);
+    }
+
+    /* Neumorphic Card for Questions */
     .neu-card {
         background: var(--bg);
         box-shadow: 7px 7px 14px var(--shadow-dark), -7px -7px 14px var(--shadow-light);
         border-radius: 20px;
         padding: 25px;
         margin-bottom: 25px;
-        border: none;
     }
 
-    .badge {
-        padding: 5px 12px;
-        border-radius: 8px;
-        font-weight: 800;
-        font-size: 0.7rem;
-        background: rgba(76, 81, 191, 0.1);
-        color: var(--primary);
-        margin-right: 8px;
-        text-transform: uppercase;
-    }
-
-    .q-text {
-        font-size: 1.15rem;
-        font-weight: 800;
-        line-height: 1.6;
-        margin: 20px 0;
-        color: var(--text);
-    }
-
-    .opt-box {
-        padding: 14px 18px;
-        border-radius: 12px;
-        background: var(--bg);
-        box-shadow: inset 3px 3px 6px var(--shadow-dark), inset -3px -3px 6px var(--shadow-light);
-        margin-bottom: 12px;
-        font-weight: 700;
-        font-size: 0.95rem;
-        color: var(--text);
-    }
+    /* Hide default Streamlit elements */
+    header, footer, #MainMenu {visibility: hidden;}
     
-    [data-testid="stSidebar"] {
-        background: var(--bg);
-        box-shadow: 4px 0 10px var(--shadow-dark);
+    /* Style the input box itself */
+    div[data-baseweb="input"] {
+        background-color: var(--bg) !important;
+        border-radius: 10px !important;
+        box-shadow: inset 4px 4px 8px var(--shadow-dark), inset -4px -4px 8px var(--shadow-light) !important;
     }
-
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
+# 3. Question Card Component
 def render_question_card(row):
-    img_tag = f'<img src="{row["img"]}" style="width:100%; border-radius:15px; margin-bottom:15px; border:2px solid var(--primary);">' if str(row.get('img')) != 'nan' and row.get('img') != "" else ""
-    
     st.markdown(f"""
     <div class="neu-card">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <div><span class="badge">{row['course_code']}</span><span class="badge">{row['year']}</span></div>
-            <div style="font-size:0.7rem; font-weight:900; opacity:0.5; text-transform:uppercase; letter-spacing:1px;">{row['topic']}</div>
+        <div style="display:flex; justify-content:space-between;">
+            <span style="color:var(--primary); font-weight:900;">{row['course_code']}</span>
+            <span style="opacity:0.5;">{row['topic']}</span>
         </div>
-        <div class="q-text">{row['q']}</div>
-        {img_tag}
-        <div class="opt-box">A. {row['a']}</div>
-        <div class="opt-box">B. {row['b']}</div>
-        <div class="opt-box">C. {row['c']}</div>
-        <div class="opt-box">D. {row['d']}</div>
+        <div style="font-size:1.2rem; font-weight:800; margin:20px 0;">{row['q']}</div>
+        <div style="padding:10px; border-radius:10px; background:rgba(0,0,0,0.05); margin-bottom:5px;">A. {row['a']}</div>
+        <div style="padding:10px; border-radius:10px; background:rgba(0,0,0,0.05); margin-bottom:5px;">B. {row['b']}</div>
     </div>
     """, unsafe_allow_html=True)
 
-# --- 2. EXECUTION LOGIC ---
+# --- EXECUTION ---
+load_full_ui()
 
-load_synapse_ui()
+# Initialize Session State
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
 
-# Use Session State to keep the token active
-if "token" not in st.session_state:
-    st.session_state.token = ""
-
-# Sidebar setup
-with st.sidebar:
-    st.title("Settings")
-    # This updates the session state when typed in the sidebar
-    input_token = st.text_input("Enter Token", type="password", key="sidebar_token")
-    if input_token:
-        st.session_state.token = input_token
-
-# Main Page Logic
-if not st.session_state.token:
-    # If no token, show a nice input box right in the middle of the screen
-    st.info("👋 Welcome to Synapse Ultimate.")
-    main_token = st.text_input("Please enter your access token to continue:", type="password")
-    if main_token:
-        st.session_state.token = main_token
-        st.rerun()
-else:
-    # TOKEN IS PRESENT - Show your actual app content here
-    st.write(f"✅ Authenticated")
+if not st.session_state.authenticated:
+    # THE CENTERED LOGIN AREA
+    st.markdown('<div class="login-container">', unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #4C51BF;'>Synapse Ultimate</h2>", unsafe_allow_html=True)
+    st.write("👋 Please enter your token to unlock the dashboard.")
     
-    # Placeholder data to test the UI
-    test_row = {
-        'course_code': 'BIO101', 'year': '2023', 'topic': 'Cell Biology',
-        'q': 'Which organelle is known as the powerhouse of the cell?',
-        'img': '', 'a': 'Nucleus', 'b': 'Mitochondria', 'c': 'Ribosome', 'd': 'Golgi'
-    }
-    render_question_card(test_row)
+    token_input = st.text_input("Access Token", type="password", label_visibility="collapsed")
+    
+    if st.button("Unlock Access", use_container_width=True):
+        if token_input == "YOUR_SECRET_TOKEN": # Replace this with your actual logic
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Invalid Token. Please try again.")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    if st.button("Log Out"):
-        st.session_state.token = ""
-        st.rerun()
+else:
+    # THE ACTUAL CONTENT (Shows after login)
+    st.sidebar.button("Log Out", on_click=lambda: st.session_state.update({"authenticated": False}))
+    
+    st.markdown("### 📚 Your Dashboard")
+    
+    # Example Row
+    test_data = {
+        'course_code': 'MTH101', 'topic': 'Algebra', 
+        'q': 'Simplify: 2x + 5x', 'a': '7x', 'b': '10x'
+    }
+    render_question_card(test_data)
