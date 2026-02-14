@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from ui_templates import load_synapse_ui, render_question_card
-from streamlit_gsheets import GSheetsConnection 
+from streamlit_gsheets_connection import GSheetsConnection 
 
 # --- 1. INITIAL SETUP ---
 st.set_page_config(page_title="Synapse Ultimate", layout="centered")
