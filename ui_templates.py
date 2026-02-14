@@ -1,7 +1,7 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-# --- 1. UI TEMPLATE CONFIGURATION ---
+# --- 1. UI TEMPLATES (Exactly as you provided) ---
 def load_synapse_ui():
     st.markdown("""
     <style>
@@ -17,10 +17,8 @@ def load_synapse_ui():
       --correct: #38A169;
     }
 
-    /* Set Background */
     .stApp { background: var(--bg); color: var(--text); font-family: 'Nunito', sans-serif; }
     
-    /* Neumorphic Card */
     .neu-card {
         background: var(--bg);
         box-shadow: 7px 7px 14px var(--shadow-dark), -7px -7px 14px var(--shadow-light);
@@ -28,10 +26,8 @@ def load_synapse_ui():
         padding: 25px;
         margin-bottom: 25px;
         border: none;
-        transition: 0.3s;
     }
 
-    /* Badges */
     .badge {
         padding: 5px 12px;
         border-radius: 8px;
@@ -43,7 +39,6 @@ def load_synapse_ui():
         text-transform: uppercase;
     }
 
-    /* Question Text */
     .q-text {
         font-size: 1.15rem;
         font-weight: 800;
@@ -52,7 +47,6 @@ def load_synapse_ui():
         color: var(--text);
     }
 
-    /* Option Box */
     .opt-box {
         padding: 14px 18px;
         border-radius: 12px;
@@ -64,13 +58,11 @@ def load_synapse_ui():
         color: var(--text);
     }
     
-    /* Sidebar Styling */
     [data-testid="stSidebar"] {
         background: var(--bg);
         box-shadow: 4px 0 10px var(--shadow-dark);
     }
 
-    /* Hide Streamlit Branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
@@ -78,8 +70,7 @@ def load_synapse_ui():
     """, unsafe_allow_html=True)
 
 def render_question_card(row):
-    # Image logic
-    img_tag = f'<img src="{row["img"]}" style="width:100%; border-radius:15px; margin-bottom:15px; border:2px solid var(--primary);">' if str(row['img']) != 'nan' and row['img'] != "" else ""
+    img_tag = f'<img src="{row["img"]}" style="width:100%; border-radius:15px; margin-bottom:15px; border:2px solid var(--primary);">' if str(row.get('img')) != 'nan' and row.get('img') != "" else ""
     
     st.markdown(f"""
     <div class="neu-card">
@@ -96,39 +87,42 @@ def render_question_card(row):
     </div>
     """, unsafe_allow_html=True)
 
-# --- 2. MAIN APP LOGIC ---
+# --- 2. EXECUTION LOGIC ---
 
-# Initialize UI
 load_synapse_ui()
 
-# Create the Sidebar Token Input
-with st.sidebar:
-    st.markdown("### 🔑 Authentication")
-    user_token = st.text_input("Enter your Access Token", type="password", placeholder="Paste token here...")
-    st.info("The token grants you access to Synapse Ultimate features.")
+# Use Session State to keep the token active
+if "token" not in st.session_state:
+    st.session_state.token = ""
 
-# Main Screen Behavior
-if not user_token:
-    # This matches the message in your screenshot
-    st.info("👋 Welcome to Synapse Ultimate. Please enter your token in the sidebar.")
+# Sidebar setup
+with st.sidebar:
+    st.title("Settings")
+    # This updates the session state when typed in the sidebar
+    input_token = st.text_input("Enter Token", type="password", key="sidebar_token")
+    if input_token:
+        st.session_state.token = input_token
+
+# Main Page Logic
+if not st.session_state.token:
+    # If no token, show a nice input box right in the middle of the screen
+    st.info("👋 Welcome to Synapse Ultimate.")
+    main_token = st.text_input("Please enter your access token to continue:", type="password")
+    if main_token:
+        st.session_state.token = main_token
+        st.rerun()
 else:
-    # Everything inside this 'else' block only shows once the token is typed
-    st.success("Access Granted!")
+    # TOKEN IS PRESENT - Show your actual app content here
+    st.write(f"✅ Authenticated")
     
-    # Example connection to GSheets
-    # conn = st.connection("gsheets", type=GSheetsConnection)
-    # df = conn.read()
-    
-    # For demonstration, here is how a card would look:
-    sample_data = {
-        'course_code': 'MTH101',
-        'year': '2024',
-        'topic': 'Calculus',
-        'q': 'What is the derivative of sin(x)?',
-        'img': '',
-        'a': 'cos(x)',
-        'b': '-cos(x)',
-        'c': 'tan(x)',
-        'd': 'sec(x)'
+    # Placeholder data to test the UI
+    test_row = {
+        'course_code': 'BIO101', 'year': '2023', 'topic': 'Cell Biology',
+        'q': 'Which organelle is known as the powerhouse of the cell?',
+        'img': '', 'a': 'Nucleus', 'b': 'Mitochondria', 'c': 'Ribosome', 'd': 'Golgi'
     }
-    render_question_card(sample_data)
+    render_question_card(test_row)
+
+    if st.button("Log Out"):
+        st.session_state.token = ""
+        st.rerun()
