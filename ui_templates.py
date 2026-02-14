@@ -1,5 +1,7 @@
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 
+# --- 1. UI TEMPLATE CONFIGURATION ---
 def load_synapse_ui():
     st.markdown("""
     <style>
@@ -93,3 +95,40 @@ def render_question_card(row):
         <div class="opt-box">D. {row['d']}</div>
     </div>
     """, unsafe_allow_html=True)
+
+# --- 2. MAIN APP LOGIC ---
+
+# Initialize UI
+load_synapse_ui()
+
+# Create the Sidebar Token Input
+with st.sidebar:
+    st.markdown("### 🔑 Authentication")
+    user_token = st.text_input("Enter your Access Token", type="password", placeholder="Paste token here...")
+    st.info("The token grants you access to Synapse Ultimate features.")
+
+# Main Screen Behavior
+if not user_token:
+    # This matches the message in your screenshot
+    st.info("👋 Welcome to Synapse Ultimate. Please enter your token in the sidebar.")
+else:
+    # Everything inside this 'else' block only shows once the token is typed
+    st.success("Access Granted!")
+    
+    # Example connection to GSheets
+    # conn = st.connection("gsheets", type=GSheetsConnection)
+    # df = conn.read()
+    
+    # For demonstration, here is how a card would look:
+    sample_data = {
+        'course_code': 'MTH101',
+        'year': '2024',
+        'topic': 'Calculus',
+        'q': 'What is the derivative of sin(x)?',
+        'img': '',
+        'a': 'cos(x)',
+        'b': '-cos(x)',
+        'c': 'tan(x)',
+        'd': 'sec(x)'
+    }
+    render_question_card(sample_data)
