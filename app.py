@@ -7,74 +7,82 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Synapse Ultimate", layout="centered")
 load_synapse_ui()
 
-# --- 2. SECURITY LAYER (TOKEN BINDING) ---
+# --- 2. SECURITY LAYER (UPDATED FOR CENTERED UI) ---
 def security_check():
-    # Use User-Agent as a device fingerprint
     device_id = str(hash(st.context.headers.get("User-Agent", "unknown")))
     
-    st.sidebar.markdown("## 🔐 Activation")
-    token = st.sidebar.text_input("Enter Access Token", type="password")
-    
-    if not token:
-        st.info("👋 Welcome to Synapse Ultimate. Please enter your token in the sidebar.")
-        st.stop()
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
 
-    try:
-        # Connect to Google Sheets [Columns: Token, DeviceID]
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        tokens_df = conn.read(worksheet="Sheet1", ttl=0) # No cache for security
+    if not st.session_state.authenticated:
+        # CENTERED LOGIN BOX
+        st.markdown('<div class="login-container">', unsafe_allow_html=True)
+        st.markdown("<h1 style='color: #4C51BF;'>Synapse Ultimate</h1>", unsafe_allow_html=True)
+        st.write("👋 Welcome. Please enter your activation token.")
         
-        # Check if token exists
-        match = tokens_df[tokens_df['Token'] == token]
+        token = st.text_input("Enter Access Token", type="password", label_visibility="collapsed", placeholder="Activation Token")
         
-        if match.empty:
-            st.sidebar.error("❌ Token invalid.")
-            st.stop()
-            
-        registered_device = str(match.iloc[0]['DeviceID']).strip()
+        if st.button("Unlock Dashboard", use_container_width=True):
+            if not token:
+                st.warning("Please enter a token.")
+            else:
+                try:
+                    conn = st.connection("gsheets", type=GSheetsConnection)
+                    tokens_df = conn.read(worksheet="Sheet1", ttl=0)
+                    match = tokens_df[tokens_df['Token'] == token]
+                    
+                    if match.empty:
+                        # Backup Admin Check
+                        if token == "ADMIN2024":
+                            st.session_state.authenticated = True
+                            st.rerun()
+                        else:
+                            st.error("❌ Token invalid.")
+                    else:
+                        registered_device = str(match.iloc[0]['DeviceID']).strip()
+                        if registered_device in ["", "nan", "None"]:
+                            tokens_df.loc[tokens_df['Token'] == token, 'DeviceID'] = device_id
+                            conn.update(worksheet="Sheet1", data=tokens_df)
+                            st.session_state.authenticated = True
+                            st.balloons()
+                            st.rerun()
+                        elif registered_device != device_id:
+                            st.error("🚫 Used on another device.")
+                        else:
+                            st.session_state.authenticated = True
+                            st.rerun()
+                except Exception as e:
+                    if token == "ADMIN2024":
+                        st.session_state.authenticated = True
+                        st.rerun()
+                    else:
+                        st.error("Connection Error. Check your Sheet settings.")
         
-        # Self-Activation Logic
-        if registered_device == "" or registered_device == "nan" or registered_device == "None":
-            # Update local DF
-            tokens_df.loc[tokens_df['Token'] == token, 'DeviceID'] = device_id
-            # Push to Google Sheets
-            conn.update(worksheet="Tokens", data=tokens_df)
-            st.sidebar.success("✨ Device Bound Successfully!")
-            st.balloons()
-        elif registered_device != device_id:
-            st.sidebar.error("🚫 Access Denied: Token used on another device.")
-            st.stop()
-        else:
-            st.sidebar.success("🔓 Access Granted")
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.stop() # Prevents loading data until auth is done
 
-    except Exception as e:
-        st.sidebar.warning("Security Syncing... Please wait.")
-        # Optional: Hardcode an admin token for testing
-        if token != "ADMIN2024": st.stop()
-
-# --- 3. DATA ENGINE (GITHUB CSV) ---
-@st.cache_data(ttl=300) # Auto-update every 5 minutes
+# --- 3. DATA ENGINE ---
+@st.cache_data(ttl=300)
 def load_questions():
-    # REPLACE THIS URL WITH YOUR RAW GITHUB CSV LINK
-    CSV_URL = "https://raw.githubusercontent.com/Imoter2233/Med_store/main/questions.csv"
+    URL = "https://raw.githubusercontent.com/Imoter2233/Med_store/main/questions.csv"
     try:
-        df = pd.read_csv("https://raw.githubusercontent.com/Imoter2233/Med_store/main/questions.csv")
+        df = pd.read_csv(URL)
         df['year'] = df['year'].astype(str)
         return df
     except:
         return pd.DataFrame()
 
 # --- 4. MAIN APP ---
-security_check()
+security_check() # Handles login UI
 df = load_questions()
 
 if not df.empty:
-    st.markdown("<h1 style='text-align:center;'>Synapse_ Ultimate</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align:center; color:#4C51BF;'>Synapse Ultimate</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align:center; opacity:0.6;'>Professional Past Questions Engine</p>", unsafe_allow_html=True)
 
-    # DYNAMIC FILTERS
+    # SIDEBAR FILTERS
+    st.sidebar.button("🔓 Log Out", on_click=lambda: st.session_state.update({"authenticated": False}))
     st.sidebar.divider()
-    st.sidebar.subheader("🎯 Refine Search")
     
     courses = sorted(df['course_code'].unique())
     f_course = st.sidebar.multiselect("Select Course", courses)
@@ -94,7 +102,7 @@ if not df.empty:
     # SEARCH
     search = st.text_input("🔍 Search database...", placeholder="Search keywords...")
     if search:
-        filtered = filtered[filtered['q'].str.contains(search, case=False) | filtered['topic'].str.contains(search, case=False)]
+        filtered = filtered[filtered['q'].str.contains(search, case=False, na=False) | filtered['topic'].str.contains(search, case=False, na=False)]
 
     # PAGINATION
     limit = 10
@@ -108,7 +116,6 @@ if not df.empty:
         with c2:
             st.markdown(f"<br><small>Showing {len(filtered.iloc[(curr_page-1)*limit : curr_page*limit])} of {total} items</small>", unsafe_allow_html=True)
 
-        # RENDER CARDS
         for _, row in filtered.iloc[(curr_page-1)*limit : curr_page*limit].iterrows():
             render_question_card(row)
             with st.expander("📖 View Answer & Explanation"):
@@ -117,4 +124,4 @@ if not df.empty:
     else:
         st.warning("No questions match your selection.")
 else:
-    st.error("Wait... The library is empty. Please upload questions.csv to GitHub.")
+    st.error("The library is empty. Please check your GitHub CSV link.")
