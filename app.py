@@ -1,218 +1,380 @@
 import streamlit as st
 import pandas as pd
-import time
-from streamlit_javascript import st_javascript
-from ui_templates import load_synapse_ui, render_question_card
-from streamlit_gsheets import GSheetsConnection 
+import hashlib
+from datetime import datetime
+from ui_templates import (
+    load_synapse_ui, 
+    render_question_card, 
+    generate_device_fingerprint,
+    is_token_valid_for_device,
+    log_security_event
+)
+from streamlit_gsheetsconnection import GSheetsConnection
 
-# --- 1. CONFIGURATION ---
+# ============================================================================
+# PAGE CONFIGURATION & INITIALIZATION
+# ============================================================================
+
 st.set_page_config(
     page_title="Synapse Ultimate",
     page_icon="🧠",
     layout="centered",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
-# Load the UI Styles immediately
 load_synapse_ui()
 
-# --- 2. JAVASCRIPT SECURITY BRIDGE ---
-def get_device_fingerprint():
-    # We use a simple key to ensure it runs only once per render cycle
-    js = """
-    (function() {
-        let fps = localStorage.getItem("synapse_device_uuid");
-        if (!fps) {
-            fps = crypto.randomUUID();
-            localStorage.setItem("synapse_device_uuid", fps);
-        }
-        return fps;
-    })();
-    """
-    return st_javascript(js)
+# ============================================================================
+# SESSION STATE MANAGEMENT
+# ============================================================================
 
-def get_cached_token():
-    return st_javascript('localStorage.getItem("synapse_auth_token");')
-
-def cache_token(token):
-    st_javascript(f'localStorage.setItem("synapse_auth_token", "{token}");')
-
-def clear_cache():
-    st_javascript('localStorage.removeItem("synapse_auth_token");')
-
-# --- 3. AUTHENTICATION LOGIC ---
-def auth_flow():
-    if "authenticated" not in st.session_state:
+def initialize_session():
+    """Initialize all session variables on first load"""
+    if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
-    
-    # --- CRITICAL FIX: HANDLE LOADING STATE ---
-    device_id = get_device_fingerprint()
-    
-    # If JS is still loading (returns 0 or None), show a spinner and wait.
-    # This prevents the "Blank Screen" of death.
-    if device_id == 0 or device_id is None:
-        st.markdown("""
-        <div style='text-align:center; margin-top:50px;'>
-            <h3 style='color:#4f46e5;'>⚙️ Synapse Security</h3>
-            <p>Establishing secure handshake...</p>
-        </div>
-        """, unsafe_allow_html=True)
-        st.stop() # Stops execution here, but shows the message above
-    
-    # 2. Check for Auto-Login (only if not already logged in)
-    if not st.session_state.authenticated:
-        cached_token = get_cached_token()
-        if cached_token and cached_token != 0 and "auto_login_checked" not in st.session_state:
-            st.session_state.auto_login_checked = True
-            verify_access(cached_token, device_id, silent=True)
+    if 'device_id' not in st.session_state:
+        st.session_state.device_id = None
+    if 'token_used' not in st.session_state:
+        st.session_state.token_used = None
+    if 'session_start' not in st.session_state:
+        st.session_state.session_start = datetime.now()
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = 1
+    if 'search_query' not in st.session_state:
+        st.session_state.search_query = ""
+    if 'selected_courses' not in st.session_state:
+        st.session_state.selected_courses = []
+    if 'selected_years' not in st.session_state:
+        st.session_state.selected_years = []
+    if 'selected_topics' not in st.session_state:
+        st.session_state.selected_topics = []
 
-    # 3. Show Login Form
-    if not st.session_state.authenticated:
-        st.markdown('<div class="login-wrapper"><div class="login-box">', unsafe_allow_html=True)
-        st.markdown("<h1 style='color:#4f46e5; margin:0;'>Synapse</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='color:#6b7280; font-size:0.9rem; margin-bottom:25px;'>Secure Assessment Engine</p>", unsafe_allow_html=True)
-        
-        token_input = st.text_input("Enter Activation Key", type="password", placeholder="Token", label_visibility="collapsed")
-        
-        if st.button("Authenticate System", use_container_width=True, type="primary"):
-            if not token_input:
-                st.warning("Token required.")
-            else:
-                verify_access(token_input, device_id, silent=False)
-        
-        st.markdown('</div></div>', unsafe_allow_html=True)
-        st.stop()
+initialize_session()
 
-def verify_access(token, device_id, silent=False):
+# ============================================================================
+# DEVICE FINGERPRINTING & PERSISTENT AUTHENTICATION
+# ============================================================================
+
+def authenticate_user():
+    """
+    Bulletproof authentication with device binding
+    - Same device returns to app without re-entering token
+    - Different device is denied even with same token
+    - Uses enhanced device fingerprinting
+    """
+    
+    # Generate device fingerprint
+    current_device_id = generate_device_fingerprint()
+    st.session_state.device_id = current_device_id
+    
+    # Check if already authenticated in this session
+    if st.session_state.authenticated:
+        return True
+    
+    # AUTH UI
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🔐 Synapse Access")
+    
+    token_input = st.sidebar.text_input(
+        "Enter Access Token",
+        type="password",
+        placeholder="Token required",
+        key="auth_token_input"
+    )
+    
+    # If no token provided, show welcome message
+    if not token_input:
+        st.sidebar.info(
+            "👋 Welcome to **Synapse Ultimate**\n\n"
+            "Enter your access token to proceed."
+        )
+        return False
+    
     try:
+        # Connect to Google Sheets
         conn = st.connection("gsheets", type=GSheetsConnection)
-        tokens_df = conn.read(worksheet="Sheet1", ttl=0)
+        tokens_df = conn.read(worksheet="Tokens", ttl=0)
         
-        if token == "ADMIN_MASTER":
-            st.session_state.authenticated = True
-            st.rerun()
-            return
-
-        match = tokens_df[tokens_df['Token'] == token]
+        # Find matching token
+        token_match = tokens_df[tokens_df['Token'] == token_input]
         
-        if match.empty:
-            if not silent: st.error("❌ Invalid Access Token")
-            if silent: clear_cache()
-            return
-
-        registered_device = str(match.iloc[0]['DeviceID']).strip()
+        if token_match.empty:
+            st.sidebar.error("❌ Invalid token. Access denied.")
+            log_security_event("AUTH_FAILED", token_input, current_device_id, "INVALID_TOKEN")
+            return False
         
-        # New Token -> Bind
-        if registered_device in ["", "nan", "None", "NaN"]:
-            tokens_df.loc[tokens_df['Token'] == token, 'DeviceID'] = device_id
-            conn.update(worksheet="Sheet1", data=tokens_df)
+        registered_device_id = str(token_match.iloc[0].get('DeviceID', '')).strip()
+        registered_date = token_match.iloc[0].get('RegisteredDate', datetime.now().isoformat())
+        
+        # VALIDATION LOGIC
+        is_valid, validation_status = is_token_valid_for_device(
+            token_input,
+            registered_device_id,
+            current_device_id
+        )
+        
+        if validation_status == "NEW_DEVICE":
+            # First time binding this token to device
+            tokens_df.loc[tokens_df['Token'] == token_input, 'DeviceID'] = current_device_id
+            tokens_df.loc[tokens_df['Token'] == token_input, 'RegisteredDate'] = datetime.now().isoformat()
+            
+            conn.update(worksheet="Tokens", data=tokens_df)
+            
+            st.sidebar.success("✨ Device bound successfully!")
+            st.balloons()
+            
+            log_security_event("AUTH_SUCCESS", token_input, current_device_id, "NEW_DEVICE_BOUND")
+            
             st.session_state.authenticated = True
-            cache_token(token)
-            if not silent: st.rerun()
-            else: st.rerun()
-
-        # Existing Token -> Check Match
-        elif registered_device == device_id:
+            st.session_state.token_used = token_input
+            return True
+        
+        elif validation_status == "VERIFIED":
+            # Same device, same token - seamless access
+            st.sidebar.success("🔓 Access granted")
+            log_security_event("AUTH_SUCCESS", token_input, current_device_id, "DEVICE_VERIFIED")
+            
             st.session_state.authenticated = True
-            cache_token(token)
-            if not silent: st.rerun()
-            else: st.rerun()
-
-        # Mismatch -> Block
-        else:
-            if not silent: st.error(f"⛔ Token bound to another device.")
-            if silent: clear_cache()
-
+            st.session_state.token_used = token_input
+            return True
+        
+        else:  # DEVICE_MISMATCH
+            st.sidebar.error(
+                "🚫 **Access Denied**\n\n"
+                "This token is registered to another device. "
+                "For security, tokens are bound to single devices. "
+                "Contact administrator if unauthorized."
+            )
+            log_security_event("AUTH_FAILED", token_input, current_device_id, "DEVICE_MISMATCH")
+            return False
+    
     except Exception as e:
-        if not silent: st.error(f"Server Connection Failed.")
+        st.sidebar.warning(f"⚠️ Error: {str(e)[:40]}...")
+        log_security_event("AUTH_ERROR", token_input, current_device_id, f"ERROR: {str(e)[:30]}")
+        return False
 
-# --- 4. MAIN APP ---
-auth_flow()
 
-@st.cache_data(ttl=600)
-def get_data():
-    URL = "https://raw.githubusercontent.com/Imoter2233/Med_store/main/questions.csv"
+def show_logout_button():
+    """Show logout button in sidebar if authenticated"""
+    if st.session_state.authenticated:
+        st.sidebar.markdown("---")
+        if st.sidebar.button("🚪 Logout", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.token_used = None
+            st.session_state.device_id = None
+            st.sidebar.success("Logged out successfully!")
+            st.rerun()
+
+# ============================================================================
+# DATA LOADING & CACHING
+# ============================================================================
+
+@st.cache_data(ttl=300)
+def load_questions():
+    """
+    Load questions from GitHub CSV
+    Updates every 5 minutes automatically
+    """
+    CSV_URL = "https://raw.githubusercontent.com/Imoter2233/Med_store/main/questions.csv"
     try:
-        df = pd.read_csv(URL)
+        df = pd.read_csv(CSV_URL)
         df['year'] = df['year'].astype(str)
+        
+        # Data validation
+        required_cols = ['id', 'q', 'a', 'b', 'c', 'd', 'ans', 'exp', 'year', 'course_code', 'topic']
+        for col in required_cols:
+            if col not in df.columns:
+                df[col] = ""
+        
         return df
-    except:
+    except Exception as e:
+        st.error(f"Failed to load questions: {str(e)[:50]}")
         return pd.DataFrame()
 
-df = get_data()
+# ============================================================================
+# FILTERING ENGINE
+# ============================================================================
 
-if not df.empty:
-    # Header
-    c1, c2 = st.columns([1, 4])
-    with c2:
-        col_h1, col_h2 = st.columns([8, 1])
-        with col_h1:
-            st.markdown("<h2 style='color:#4f46e5; padding-top:10px;'>Synapse Ultimate</h2>", unsafe_allow_html=True)
-        with col_h2:
-            if st.button("🔒", help="Logout"):
-                clear_cache()
-                st.session_state.authenticated = False
-                st.rerun()
+def apply_filters(df):
+    """Apply all filters from sidebar"""
+    filtered = df.copy()
+    
+    # Course filter
+    if st.session_state.selected_courses:
+        filtered = filtered[filtered['course_code'].isin(st.session_state.selected_courses)]
+    
+    # Year filter
+    if st.session_state.selected_years:
+        filtered = filtered[filtered['year'].isin(st.session_state.selected_years)]
+    
+    # Topic filter
+    if st.session_state.selected_topics:
+        filtered = filtered[filtered['topic'].isin(st.session_state.selected_topics)]
+    
+    # Search filter
+    if st.session_state.search_query:
+        mask = (
+            filtered['q'].str.contains(st.session_state.search_query, case=False, na=False) |
+            filtered['topic'].str.contains(st.session_state.search_query, case=False, na=False) |
+            filtered['course_code'].str.contains(st.session_state.search_query, case=False, na=False)
+        )
+        filtered = filtered[mask]
+    
+    return filtered
 
-    # Sidebar
-    with st.sidebar:
-        st.markdown("### 📚 Knowledge Base")
-        sel_course = st.multiselect("Course", sorted(df['course_code'].unique()))
-        sel_year = st.multiselect("Year", sorted(df['year'].unique(), reverse=True))
-        sel_topic = st.multiselect("Topic", sorted(df['topic'].unique()))
-        st.markdown("---")
-        st.caption("v3.0 Secure")
+# ============================================================================
+# MAIN APPLICATION
+# ============================================================================
 
-    # Filter Logic
-    filtered_df = df.copy()
-    if sel_course: filtered_df = filtered_df[filtered_df['course_code'].isin(sel_course)]
-    if sel_year: filtered_df = filtered_df[filtered_df['year'].isin(sel_year)]
-    if sel_topic: filtered_df = filtered_df[filtered_df['topic'].isin(sel_topic)]
+# AUTHENTICATION CHECK
+if not authenticate_user():
+    st.info("🔐 Please authenticate to continue")
+    st.stop()
 
-    # Search
-    search_query = st.text_input("Search", placeholder="🔍 Search...", label_visibility="collapsed")
-    if search_query:
-        filtered_df = filtered_df[
-            filtered_df['q'].str.contains(search_query, case=False, na=False) | 
-            filtered_df['topic'].str.contains(search_query, case=False, na=False)
-        ]
+# Show logout button
+show_logout_button()
 
-    # Results & Pagination
-    total_results = len(filtered_df)
-    st.markdown(f"<p style='color:#6b7280; font-size:0.9rem;'>Found <strong>{total_results}</strong> questions</p>", unsafe_allow_html=True)
+# Load data
+df = load_questions()
 
-    if total_results > 0:
-        if 'page_number' not in st.session_state: st.session_state.page_number = 1
-        QUESTIONS_PER_PAGE = 5
-        max_pages = (total_results // QUESTIONS_PER_PAGE) + (1 if total_results % QUESTIONS_PER_PAGE > 0 else 0)
+if df.empty:
+    st.error("📚 Library is empty. Questions not found.")
+    st.stop()
+
+# HEADER
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    st.markdown(
+        "<h1 style='text-align:center; margin-bottom:5px;'>🧠 Synapse Ultimate</h1>",
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        "<p style='text-align:center; opacity:0.6; margin-bottom:20px;'>Professional Past Questions Engine</p>",
+        unsafe_allow_html=True
+    )
+
+# SIDEBAR FILTERS
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎯 Refine Search")
+
+# Course filter
+courses = sorted(df['course_code'].unique())
+st.session_state.selected_courses = st.sidebar.multiselect(
+    "Select Course",
+    courses,
+    default=st.session_state.selected_courses,
+    key="filter_courses"
+)
+
+# Year filter
+years = sorted(df['year'].unique(), reverse=True)
+st.session_state.selected_years = st.sidebar.multiselect(
+    "Select Year",
+    years,
+    default=st.session_state.selected_years,
+    key="filter_years"
+)
+
+# Topic filter
+topics = sorted(df['topic'].unique())
+st.session_state.selected_topics = st.sidebar.multiselect(
+    "Select Topic",
+    topics,
+    default=st.session_state.selected_topics,
+    key="filter_topics"
+)
+
+# Search
+st.markdown("### 🔍 Search Database")
+search_col1, search_col2 = st.columns([4, 1])
+with search_col1:
+    st.session_state.search_query = st.text_input(
+        "Search keywords...",
+        value=st.session_state.search_query,
+        placeholder="Type to search...",
+        key="search_input"
+    )
+with search_col2:
+    if st.button("🔄", help="Reset search", key="reset_search"):
+        st.session_state.search_query = ""
+        st.rerun()
+
+# Apply filters
+filtered_df = apply_filters(df)
+
+# RESULTS INFO
+total_results = len(filtered_df)
+st.markdown(f"<small style='opacity:0.6;'>**Found:** {total_results} question{'s' if total_results != 1 else ''}</small>", unsafe_allow_html=True)
+
+# PAGINATION
+if total_results > 0:
+    items_per_page = 10
+    total_pages = (total_results // items_per_page) + (1 if total_results % items_per_page else 0)
+    
+    # Pagination controls
+    pag_col1, pag_col2, pag_col3 = st.columns([1, 2, 1])
+    
+    with pag_col1:
+        if st.button("⬅️ Previous", key="prev_page", disabled=(st.session_state.current_page <= 1)):
+            st.session_state.current_page -= 1
+            st.rerun()
+    
+    with pag_col2:
+        page_display = st.columns(total_pages, gap="small")
+        for i in range(total_pages):
+            with page_display[i]:
+                if st.button(
+                    str(i + 1),
+                    key=f"page_{i+1}",
+                    use_container_width=True,
+                ):
+                    st.session_state.current_page = i + 1
+                    st.rerun()
+    
+    with pag_col3:
+        if st.button("Next ➡️", key="next_page", disabled=(st.session_state.current_page >= total_pages)):
+            st.session_state.current_page += 1
+            st.rerun()
+    
+    # Validate current page
+    if st.session_state.current_page > total_pages:
+        st.session_state.current_page = total_pages
+    if st.session_state.current_page < 1:
+        st.session_state.current_page = 1
+    
+    st.markdown(
+        f"<small style='text-align:center;'><strong>Page {st.session_state.current_page} of {total_pages}</strong></small>",
+        unsafe_allow_html=True
+    )
+    
+    # Render questions
+    start_idx = (st.session_state.current_page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, total_results)
+    
+    st.markdown("---")
+    
+    for idx in range(start_idx, end_idx):
+        row = filtered_df.iloc[idx]
+        render_question_card(row)
         
-        # Reset page if out of bounds
-        if st.session_state.page_number > max_pages: st.session_state.page_number = 1
-        
-        start = (st.session_state.page_number - 1) * QUESTIONS_PER_PAGE
-        end = start + QUESTIONS_PER_PAGE
-        
-        for index, row in filtered_df.iloc[start:end].iterrows():
-            render_question_card(row)
-            with st.expander("👁️ View Answer"):
-                st.info(f"**Answer:** {row['ans']}")
-                st.markdown(f"_{row['exp']}_")
-
-        # Pagination Buttons
-        st.markdown("---")
-        c_prev, c_disp, c_next = st.columns([1, 2, 1])
-        with c_prev:
-            if st.button("⬅️", disabled=(st.session_state.page_number == 1), use_container_width=True):
-                st.session_state.page_number -= 1
-                st.rerun()
-        with c_disp:
-            st.markdown(f"<div style='text-align:center; padding-top:7px;'>Page {st.session_state.page_number} / {max_pages}</div>", unsafe_allow_html=True)
-        with c_next:
-            if st.button("➡️", disabled=(st.session_state.page_number >= max_pages), use_container_width=True):
-                st.session_state.page_number += 1
-                st.rerun()
-    else:
-        st.warning("No matches found.")
+        # Answer expandable section
+        with st.expander(f"📖 View Answer & Explanation", key=f"answer_{row.get('id', idx)}"):
+            col1, col2 = st.columns([1, 3])
+            
+            with col1:
+                st.markdown(f"**Answer:**")
+            with col2:
+                st.markdown(f"`{row.get('ans', 'N/A')}`")
+            
+            st.markdown("---")
+            st.markdown(f"**Explanation:**\n\n{row.get('exp', 'No explanation available')}")
 
 else:
-    st.error("Database connection failed.")
+    st.warning("📭 No questions match your selection. Try adjusting filters.")
+
+# FOOTER
+st.markdown("---")
+st.markdown(
+    "<small style='text-align:center; opacity:0.5;'>© 2026 Synapse Ultimate | Secure Learning Platform</small>",
+    unsafe_allow_html=True
+)
